@@ -229,11 +229,25 @@ class ManyToManyPersister extends AbstractCollectionPersister
         $mapping       = $collection->getMapping();
         $owner         = $collection->getOwner();
         $ownerMetadata = $this->em->getClassMetadata(get_class($owner));
+        $id            = $this->uow->getEntityIdentifier($owner);
+        $targetClass   = $this->em->getClassMetadata($mapping['targetEntity']);
+        $onConditions  = $this->getOnConditionSQL($mapping);
         $whereClauses  = $params = array();
 
-        foreach ($mapping['relationToSourceKeyColumns'] as $key => $value) {
+        if ( ! $mapping['isOwningSide']) {
+            $associationSourceClass = $targetClass;
+            $mapping = $targetClass->associationMappings[$mapping['mappedBy']];
+            $sourceRelationMode = 'relationToTargetKeyColumns';
+        } else {
+            $associationSourceClass = $ownerMetadata;
+            $sourceRelationMode = 'relationToSourceKeyColumns';
+        }
+
+        foreach ($mapping[$sourceRelationMode] as $key => $value) {
             $whereClauses[] = sprintf('t.%s = ?', $key);
-            $params[]       = $ownerMetadata->getFieldValue($owner, $value);
+            $params[] = $ownerMetadata->containsForeignIdentifier
+                ? $id[$ownerMetadata->getFieldForColumn($value)]
+                : $id[$ownerMetadata->fieldNames[$value]];
         }
 
         $parameters = $this->expandCriteriaParameters($criteria);
@@ -241,18 +255,16 @@ class ManyToManyPersister extends AbstractCollectionPersister
         foreach ($parameters as $parameter) {
             list($name, $value, $operator) = $parameter;
 
-            $whereClauses[] = sprintf('te.%s %s ?', $name, $operator);
-            $params[]       = $value;
+            $field = $this->quoteStrategy->getColumnName($name, $targetClass, $this->platform);
+            $whereClauses[]     = sprintf('te.%s %s ?', $field, $operator);
+            $params[]           = $value;
         }
 
-        $mapping      = $collection->getMapping();
-        $targetClass  = $this->em->getClassMetadata($mapping['targetEntity']);
         $tableName    = $this->quoteStrategy->getTableName($targetClass, $this->platform);
-        $joinTable    = $this->quoteStrategy->getJoinTableName($mapping, $ownerMetadata, $this->platform);
-        $onConditions = $this->getOnConditionSQL($mapping);
+        $joinTable    = $this->quoteStrategy->getJoinTableName($mapping, $associationSourceClass, $this->platform);
 
         $rsm = new Query\ResultSetMappingBuilder($this->em);
-        $rsm->addRootEntityFromClassMetadata($mapping['targetEntity'], 'te');
+        $rsm->addRootEntityFromClassMetadata($targetClass->name, 'te');
 
         $sql = 'SELECT ' . $rsm->generateSelectClause()
             . ' FROM ' . $tableName . ' te'
